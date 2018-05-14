@@ -1,0 +1,175 @@
+<!DOCTYPE html>
+<html>
+  <head>
+      <meta charset='utf-8' />
+      <title>Display driving directions</title>
+      <meta name='viewport' content='initial-scale=1,maximum-scale=1,user-scalable=no' />
+      <script src='https://api.tiles.mapbox.com/mapbox-gl-js/v0.44.2/mapbox-gl.js'></script>
+      <link href='https://api.tiles.mapbox.com/mapbox-gl-js/v0.44.2/mapbox-gl.css' rel='stylesheet' />
+      <style>
+          body { margin:0; padding:0; }
+          #map { position:absolute; top:0; bottom:0; width:100%; }
+      </style>
+  </head>
+    <body>
+      <script src='https://api.mapbox.com/mapbox-gl-js/plugins/mapbox-gl-directions/v3.1.1/mapbox-gl-directions.js'></script>
+      <link rel='stylesheet' href='https://api.mapbox.com/mapbox-gl-js/plugins/mapbox-gl-directions/v3.1.1/mapbox-gl-directions.css' type='text/css' />
+      <div id='instructions'></div>
+      <div id='map'></div>
+
+      <script>
+
+          let waypointTracker = 0;
+          let newJob;
+          let intervalId;
+
+          mapboxgl.accessToken = 'pk.eyJ1IjoiZGFuaWVsamFtZXNrYXkiLCJhIjoiY2pnZ25xanU5MmRldDMzcGY3ZWhwOWE5biJ9.vEgSv9Vy49SODOG2U5PopA';
+          const map = new mapboxgl.Map({
+            container: 'map',
+            style: 'mapbox://styles/danieljameskay/cjgzfw1ac000b2stladr4lg20',
+            center: [-73.996207, 40.717573],
+            zoom: 17
+          });
+
+          map.on('load', () => {
+
+            newjob = true;
+
+            // Send to Kafa that the drive is available.
+
+            map.addSource('driver', {
+              "type": "geojson",
+              "data":{
+                  "type": "Point",
+                  "coordinates": [-73.996207, 40.717573]
+              }
+            });
+
+          map.addLayer({
+            "id": "driver",
+            "source": "driver",
+            "type": "circle",
+            "paint": {
+              "circle-radius": 12,
+              "circle-color": "#b5563e"
+            }
+          });
+
+          // Emits vehicles location every 2 seconds. This needs sending to Kafka.
+          setInterval(() => {
+            console.log(`Event sent to Kafka: ${map.getSource('driver')._data.coordinates.toString()}`);
+          }, 2000);
+
+        });
+
+        map.on('click', (e) => {
+
+          if(map.getLayer('route')) {
+            map.removeLayer('route');
+            map.removeSource('route');
+            map.removeLayer('end');
+            map.removeSource('end');
+          }
+
+          const currentPos = map.getSource('driver')._data.coordinates.toString();
+          const destPos = Object.values(e.lngLat).toString();
+
+          // creates the source for the end point
+          map.addSource('end', {
+            "type": "geojson",
+            "data":{
+                "type": "Point",
+                "coordinates": Object.values(e.lngLat)
+            }
+          });
+
+          // creates a layer to display the end point on the map.
+          map.addLayer({
+            "id": "end",
+            "source": 'end',
+            "type": "circle",
+            "paint": {
+              "circle-radius": 12,
+              "circle-color": "#b5563e"
+            }
+          });
+
+          function reqListener () {
+
+            // parse the json payload.
+            const data = JSON.parse(this.response);
+
+            // get the geometry from the data.
+            const route = data.routes[0].geometry;
+
+            // Send to Kafa that the drive is not available.
+            newJob = false;
+            console.log('Event sent to Kafka: The driver is on its way to a customer.');
+
+            // create a source of data for the route using the payload data.
+            map.addSource('route', {
+              "type": 'geojson',
+              "data": {
+                "type": 'Feature',
+                "geometry": route
+              }
+            });
+
+            // create a layer which is going to display the route using the route source for data.
+            map.addLayer({
+              "id": 'route',
+              "type": 'line',
+              "source": 'route',
+              "paint": {
+                "line-color": "#b5563e",
+                'line-width': 6
+              }
+            });
+
+
+            function drive() {
+
+              function pointOnMap(value) {
+                waypointTracker++;
+                return {
+                    "type": "Point",
+                    "coordinates": value
+                };
+              }
+
+              map.getSource('driver').setData(pointOnMap(route.coordinates[waypointTracker]));
+
+              if(waypointTracker === route.coordinates.length) {
+                console.log('Event sent to Kafka: The driver has reached its destination.')
+                waypointTracker = 0;
+                clearInterval(intervalId);
+                map.removeLayer('route');
+                map.removeSource('route');
+                map.removeLayer('end');
+                map.removeSource('end');
+                console.log('Event sent to Kafka: The driver is ready for a new route.')
+                newJob = true;
+                // Fire this to kafka.
+              }
+
+            }
+
+            if(newJob === false) {
+              intervalId = setInterval(drive, 2000);
+            }
+
+          }
+
+        // Make a call to the directions api to get the route information.
+        const oReq = new XMLHttpRequest();
+        oReq.addEventListener("load", reqListener);
+        oReq.open("GET", `https://api.mapbox.com/directions/v5/mapbox/driving-traffic/${currentPos};${destPos}?access_token=pk.eyJ1IjoiZGFuaWVsamFtZXNrYXkiLCJhIjoiY2pnZ25xanU5MmRldDMzcGY3ZWhwOWE5biJ9.vEgSv9Vy49SODOG2U5PopA&overview=full&geometries=geojson`);
+        oReq.send();
+
+
+        });
+
+      </script>
+
+  </body>
+</html>
